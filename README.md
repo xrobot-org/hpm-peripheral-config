@@ -14,6 +14,7 @@ files used by LibXR.
 ## Features
 
 - Discover HPM projects and the board `pinmux.hpmpc` file.
+- Reload detected peripherals automatically when `.hpmpc` is saved.
 - Select the Pinmux functions that belong to the active application.
 - Configure UART, I2C, SPI, CAN and CAN FD behavior in a VS Code webview.
 - Validate peripheral clocks, communication timing and incompatible settings.
@@ -52,8 +53,8 @@ rewrites the project's LibXR repository or CMake dependency source.
 1. Open the HPM project root in VS Code.
 2. Open **XRobot HPM Peripherals** in the Activity Bar.
 3. Use **Pinmux** to assign pins with the official tool.
-4. Select **Refresh from .hpmpc** and configure the detected peripherals.
-5. Select **Save + Generate** after the configuration check passes.
+4. Save `.hpmpc`; the peripheral editor reloads the detected configuration automatically.
+5. Configure the peripherals and select **Save + Generate** after validation passes.
 
 The extension preserves unmanaged sections in `User/libxr_config.yaml` and
 only updates the peripheral entries it owns. Commit project files before the

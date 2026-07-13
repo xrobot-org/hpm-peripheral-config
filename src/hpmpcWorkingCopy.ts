@@ -16,7 +16,18 @@ type LoadedHpmpc = {
   hasTrailingNewline: boolean;
 };
 
-const watchedWorkingCopies = new Set<string>();
+type WatchedWorkingCopy = {
+  sourcePath: string;
+  workingCopyPath: string;
+  listener: (current: fs.Stats, previous: fs.Stats) => void;
+};
+
+const watchedWorkingCopies = new Map<string, WatchedWorkingCopy>();
+
+function normalizedFilePath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
 
 function sleepMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -85,6 +96,17 @@ function copyWorkingContentToSource(sourcePath: string, workingCopyPath: string)
   }
 }
 
+function copySourceContentToWorkingCopy(sourcePath: string, workingCopyPath: string): void {
+  const source = readHpmpc(sourcePath);
+  const workingCopy = readHpmpc(workingCopyPath);
+  if (!hasCredential(workingCopy.document.clientKey) || !hasCredential(workingCopy.document.secretKey)) {
+    throw new Error(t('hpmpc.signedCopyInvalid'));
+  }
+  if (!contentEqual(source.document, workingCopy.document)) {
+    copyContent(source, workingCopy, workingCopyPath);
+  }
+}
+
 function synchronizeHpmpcPair(sourcePath: string, workingCopyPath: string): void {
   const source = readHpmpc(sourcePath);
   const workingCopy = readHpmpc(workingCopyPath);
@@ -113,21 +135,39 @@ function signedWorkingCopyCandidates(workspaceRoot: string, sourcePath: string):
 }
 
 function watchWorkingCopy(sourcePath: string, workingCopyPath: string): void {
-  const key = path.resolve(workingCopyPath).toLowerCase();
-  if (watchedWorkingCopies.has(key)) {
+  const resolvedSourcePath = path.resolve(sourcePath);
+  const resolvedWorkingCopyPath = path.resolve(workingCopyPath);
+  const key = normalizedFilePath(resolvedWorkingCopyPath);
+  const existing = watchedWorkingCopies.get(key);
+  if (existing && normalizedFilePath(existing.sourcePath) === normalizedFilePath(resolvedSourcePath)) {
     return;
   }
-  watchedWorkingCopies.add(key);
-  fs.watchFile(workingCopyPath, { interval: 500, persistent: false }, (current, previous) => {
+  if (existing) {
+    fs.unwatchFile(existing.workingCopyPath, existing.listener);
+  }
+  const listener = (current: fs.Stats, previous: fs.Stats): void => {
     if (current.mtimeMs === previous.mtimeMs) {
       return;
     }
     try {
-      copyWorkingContentToSource(sourcePath, workingCopyPath);
+      copyWorkingContentToSource(resolvedSourcePath, resolvedWorkingCopyPath);
     } catch {
       // The HPM tool may replace the file while saving; the next change retries the sync.
     }
+  };
+  watchedWorkingCopies.set(key, {
+    sourcePath: resolvedSourcePath,
+    workingCopyPath: resolvedWorkingCopyPath,
+    listener,
   });
+  fs.watchFile(resolvedWorkingCopyPath, { interval: 500, persistent: false }, listener);
+}
+
+export function disposeHpmpcWorkingCopyWatchers(): void {
+  for (const watched of watchedWorkingCopies.values()) {
+    fs.unwatchFile(watched.workingCopyPath, watched.listener);
+  }
+  watchedWorkingCopies.clear();
 }
 
 export function prepareHpmpcForOpen(workspaceRoot: string, sourcePath: string): string {
@@ -146,7 +186,14 @@ export function prepareHpmpcForOpen(workspaceRoot: string, sourcePath: string): 
     throw new Error(t('hpmpc.signedCopyNotFound'));
   }
 
-  synchronizeHpmpcPair(sourcePath, workingCopyPath);
+  const existing = watchedWorkingCopies.get(normalizedFilePath(workingCopyPath));
+  if (existing && normalizedFilePath(existing.sourcePath) !== normalizedFilePath(sourcePath)) {
+    fs.unwatchFile(existing.workingCopyPath, existing.listener);
+    watchedWorkingCopies.delete(normalizedFilePath(workingCopyPath));
+    copySourceContentToWorkingCopy(sourcePath, workingCopyPath);
+  } else {
+    synchronizeHpmpcPair(sourcePath, workingCopyPath);
+  }
   watchWorkingCopy(sourcePath, workingCopyPath);
   return workingCopyPath;
 }

@@ -13,9 +13,10 @@ import {
   writeLibxrConfig,
   type PeripheralConfig,
 } from './configFile';
+import { DebouncedTask } from './autoReload';
 import { clockSourcesForSoc } from './clockConfig';
 import { generate } from './generator';
-import { prepareHpmpcForOpen } from './hpmpcWorkingCopy';
+import { disposeHpmpcWorkingCopyWatchers, prepareHpmpcForOpen } from './hpmpcWorkingCopy';
 import { discoverProject } from './hpmProject';
 import { currentLocale, setLocale, t, webviewMessages } from './i18n';
 
@@ -23,6 +24,8 @@ setLocale(vscode.env.language);
 
 const output = vscode.window.createOutputChannel(t('extension.title'));
 let activeSidebarProvider: HpmPeripheralViewProvider | undefined;
+const activeWebviews = new Map<vscode.Webview, vscode.Disposable>();
+let watchedHpmpcPath: string | undefined;
 
 function escapeHtmlText(value: string): string {
   return value
@@ -64,6 +67,84 @@ function workspaceRelative(root: string, filePath: string): string {
 
 function discoverCurrentProject() {
   return discoverProject(workspaceRoot(), configuredHpmpcPath());
+}
+
+function normalizedFilePath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function notifyHpmpcChanged(filePath: string): Promise<void> {
+  output.appendLine(`[HPM Pinmux] detected update: ${filePath}`);
+  await Promise.all(
+    [...activeWebviews.keys()].map((webview) => webview.postMessage({ command: 'hpmpcChanged' })),
+  );
+}
+
+function watchHpmpcFile(filePath: string): void {
+  const resolved = path.resolve(filePath);
+  if (watchedHpmpcPath && normalizedFilePath(watchedHpmpcPath) === normalizedFilePath(resolved)) {
+    return;
+  }
+  if (watchedHpmpcPath) {
+    fs.unwatchFile(watchedHpmpcPath, onHpmpcFileChanged);
+  }
+  watchedHpmpcPath = resolved;
+  fs.watchFile(resolved, { interval: 300, persistent: false }, onHpmpcFileChanged);
+}
+
+function clearHpmpcWatcher(): void {
+  if (watchedHpmpcPath) {
+    fs.unwatchFile(watchedHpmpcPath, onHpmpcFileChanged);
+    watchedHpmpcPath = undefined;
+  }
+}
+
+function onHpmpcFileChanged(current: fs.Stats, previous: fs.Stats): void {
+  if (current.mtimeMs === previous.mtimeMs && current.size === previous.size) {
+    return;
+  }
+  hpmpcReloadTask.schedule();
+}
+
+async function reloadHpmpcViews(): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const project = discoverCurrentProject();
+      watchHpmpcFile(project.hpmpcPath);
+      await notifyHpmpcChanged(project.hpmpcPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 4) {
+        await wait(120);
+      }
+    }
+  }
+  throw lastError;
+}
+
+const hpmpcReloadTask = new DebouncedTask(
+  reloadHpmpcViews,
+  350,
+  (error) => output.appendLine(`[HPM Pinmux] automatic reload failed: ${error instanceof Error ? error.message : String(error)}`),
+);
+
+function rebindHpmpcWatcher(reloadViews = false): void {
+  try {
+    const project = discoverCurrentProject();
+    watchHpmpcFile(project.hpmpcPath);
+    if (reloadViews) {
+      hpmpcReloadTask.schedule(0);
+    }
+  } catch {
+    clearHpmpcWatcher();
+  }
 }
 
 function runCommand(command: string, args: string[], cwd: string): Promise<void> {
@@ -113,6 +194,7 @@ async function refreshConfig(): Promise<void> {
   const target = configPath(project.root);
   const config = loadOrCreateConfig(target, project);
   writeConfig(target, config);
+  await notifyHpmpcChanged(project.hpmpcPath);
   output.appendLine(`Refreshed ${target}`);
   output.show(true);
   void vscode.window.showInformationMessage(t('notification.configRefreshed', { file: path.basename(target) }));
@@ -136,6 +218,21 @@ async function generateBoardGlue(): Promise<void> {
   void vscode.window.showInformationMessage(t('notification.boardGlueGenerated'));
 }
 
+function projectMeta(project: ReturnType<typeof discoverCurrentProject>): string {
+  return `${project.boardName} / ${project.socName} / ${workspaceRelative(project.root, project.hpmpcPath)}`;
+}
+
+function peripheralFunctionsForProject(
+  project: ReturnType<typeof discoverCurrentProject>,
+): Record<string, string[]> {
+  return Object.fromEntries(
+    project.peripherals.map((peripheral) => [
+      peripheral.instance.toLowerCase(),
+      [...new Set([...peripheral.functions, `init_${peripheral.instance.toLowerCase()}_pins`])],
+    ]),
+  );
+}
+
 function webviewHtml(config: PeripheralConfig, project: ReturnType<typeof discoverCurrentProject>, compact = false): string {
   const nonce = String(Date.now());
   const serialized = JSON.stringify(config).replace(/</g, '\\u003c');
@@ -143,12 +240,7 @@ function webviewHtml(config: PeripheralConfig, project: ReturnType<typeof discov
   const locale = currentLocale();
   const pinmuxFunctions = JSON.stringify(project.pinmuxFunctions).replace(/</g, '\\u003c');
   const clockSources = JSON.stringify(clockSourcesForSoc(project.socName, project.boardName)).replace(/</g, '\\u003c');
-  const peripheralFunctions = JSON.stringify(Object.fromEntries(
-    project.peripherals.map((peripheral) => [
-      peripheral.instance.toLowerCase(),
-      [...new Set([...peripheral.functions, `init_${peripheral.instance.toLowerCase()}_pins`])],
-    ]),
-  )).replace(/</g, '\\u003c');
+  const peripheralFunctions = JSON.stringify(peripheralFunctionsForProject(project)).replace(/</g, '\\u003c');
   const initialErrors = JSON.stringify(configurationErrors(config, project)).replace(/</g, '\\u003c');
   const initialWarnings = JSON.stringify(configurationWarnings(config, project)).replace(/</g, '\\u003c');
   return `<!doctype html>
@@ -204,7 +296,6 @@ function webviewHtml(config: PeripheralConfig, project: ReturnType<typeof discov
   <div class="toolbar">
     <button id="save">${escapeHtmlText(t('webview.saveYaml'))}</button>
     <button id="generate">${escapeHtmlText(t('webview.saveGenerate'))}</button>
-    <button class="secondary" id="refresh">${escapeHtmlText(t('webview.refreshHpmpc'))}</button>
     <button class="secondary" id="openPinmux">${escapeHtmlText(t('webview.openPinmux'))}</button>
     <button class="secondary" id="openProjectGenerator">${escapeHtmlText(t('webview.openProjectGenerator'))}</button>
   </div>
@@ -214,19 +305,19 @@ function webviewHtml(config: PeripheralConfig, project: ReturnType<typeof discov
     const config = ${serialized};
     const ui = ${serializedUi};
     const numberFormatter = new Intl.NumberFormat('${locale}');
-    const pinmuxFunctions = ${pinmuxFunctions};
-    const clockSources = ${clockSources};
-    const peripheralFunctions = ${peripheralFunctions};
+    let pinmuxFunctions = ${pinmuxFunctions};
+    let clockSources = ${clockSources};
+    let peripheralFunctions = ${peripheralFunctions};
     let validationErrors = ${initialErrors};
     let validationWarnings = ${initialWarnings};
-    const clockSourceHz = Object.fromEntries(clockSources.map(source => [source.id, source.hz]));
+    let clockSourceHz = Object.fromEntries(clockSources.map(source => [source.id, source.hz]));
     const groups = [
       ['uart', 'UART'],
       ['i2c', 'I2C'],
       ['spi', 'SPI'],
       ['mcan', 'MCAN / FDCAN'],
     ];
-    const operationButtons = ['save', 'generate', 'refresh', 'openPinmux', 'openProjectGenerator'];
+    const operationButtons = ['save', 'generate', 'openPinmux', 'openProjectGenerator'];
     const sectionOpenState = new Map();
     const cardOpenState = new Map();
     document.getElementById('meta').textContent = config.project.board + ' / ' + config.project.soc + ' / ' + config.project.hpmpc;
@@ -551,12 +642,24 @@ function webviewHtml(config: PeripheralConfig, project: ReturnType<typeof discov
     }
     document.getElementById('save').onclick = () => runOperation('save');
     document.getElementById('generate').onclick = () => runOperation('generate');
-    document.getElementById('refresh').onclick = () => runOperation('refresh');
     document.getElementById('openPinmux').onclick = () => runOperation('openPinmux', false);
     document.getElementById('openProjectGenerator').onclick = () => runOperation('openProjectGenerator', false);
     window.addEventListener('message', event => {
       const message = event.data || {};
-      if (message.command === 'validation') {
+      if (message.command === 'hpmpcChanged') {
+        vscode.postMessage({ command: 'reloadFromHpmpc', config });
+      } else if (message.command === 'projectReloaded') {
+        for (const key of Object.keys(config)) delete config[key];
+        Object.assign(config, message.config || {});
+        pinmuxFunctions = message.pinmuxFunctions || [];
+        clockSources = message.clockSources || [];
+        peripheralFunctions = message.peripheralFunctions || {};
+        clockSourceHz = Object.fromEntries(clockSources.map(source => [source.id, source.hz]));
+        validationErrors = message.errors || [];
+        validationWarnings = message.warnings || [];
+        document.getElementById('meta').textContent = message.meta || '';
+        render();
+      } else if (message.command === 'validation') {
         if (message.config) {
           for (const key of Object.keys(config)) delete config[key];
           Object.assign(config, message.config);
@@ -576,19 +679,30 @@ function webviewHtml(config: PeripheralConfig, project: ReturnType<typeof discov
 
 function bindWebviewMessages(
   webview: vscode.Webview,
-  context: vscode.ExtensionContext,
-  project?: ReturnType<typeof discoverCurrentProject>,
-): void {
-  webview.onDidReceiveMessage(async (message: { command?: string; config?: PeripheralConfig }) => {
+): () => void {
+  activeWebviews.get(webview)?.dispose();
+  const messageDisposable = webview.onDidReceiveMessage(async (message: { command?: string; config?: PeripheralConfig }) => {
     let refreshSidebar = false;
     try {
-      const currentProject = project ?? discoverCurrentProject();
+      const currentProject = discoverCurrentProject();
       const target = configPath(currentProject.root);
       if (message.command === 'validate' && message.config) {
         const config = normalizeConfig(currentProject, message.config);
         await webview.postMessage({
           command: 'validation',
           config,
+          errors: configurationErrors(config, currentProject),
+          warnings: configurationWarnings(config, currentProject),
+        });
+      } else if (message.command === 'reloadFromHpmpc' && message.config) {
+        const config = normalizeConfig(currentProject, message.config);
+        await webview.postMessage({
+          command: 'projectReloaded',
+          config,
+          meta: projectMeta(currentProject),
+          pinmuxFunctions: currentProject.pinmuxFunctions,
+          clockSources: clockSourcesForSoc(currentProject.socName, currentProject.boardName),
+          peripheralFunctions: peripheralFunctionsForProject(currentProject),
           errors: configurationErrors(config, currentProject),
           warnings: configurationWarnings(config, currentProject),
         });
@@ -631,19 +745,6 @@ function bindWebviewMessages(
         });
         refreshSidebar = true;
         void vscode.window.showInformationMessage(t('notification.configGenerated'));
-      } else if (message.command === 'refresh') {
-        if (message.config) {
-          writeConfig(target, normalizeConfig(currentProject, message.config));
-        }
-        await refreshConfig();
-        const config = loadOrCreateConfig(target, currentProject);
-        await webview.postMessage({
-          command: 'validation',
-          config,
-          errors: configurationErrors(config, currentProject),
-          warnings: configurationWarnings(config, currentProject),
-        });
-        refreshSidebar = true;
       } else if (message.command === 'openPinmux') {
         await openPinmux();
       } else if (message.command === 'openProjectGenerator') {
@@ -655,14 +756,21 @@ function bindWebviewMessages(
       output.show(true);
       void vscode.window.showErrorMessage(messageText);
     } finally {
-      if (message.command !== 'validate') {
+      if (message.command !== 'validate' && message.command !== 'reloadFromHpmpc') {
         await webview.postMessage({ command: 'operationComplete' });
       }
       if (refreshSidebar) {
         activeSidebarProvider?.refresh(webview);
       }
     }
-  }, undefined, context.subscriptions);
+  });
+  activeWebviews.set(webview, messageDisposable);
+  return () => {
+    if (activeWebviews.get(webview) === messageDisposable) {
+      activeWebviews.delete(webview);
+    }
+    messageDisposable.dispose();
+  };
 }
 
 async function openConfigUi(context: vscode.ExtensionContext): Promise<void> {
@@ -676,19 +784,30 @@ async function openConfigUi(context: vscode.ExtensionContext): Promise<void> {
     { enableScripts: true, retainContextWhenHidden: true },
   );
   panel.webview.html = webviewHtml(config, project);
-  bindWebviewMessages(panel.webview, context, project);
+  const unbind = bindWebviewMessages(panel.webview);
+  panel.onDidDispose(unbind, undefined, context.subscriptions);
 }
 
 class HpmPeripheralViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
+  private unbind?: () => void;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
+    this.unbind?.();
     this.view = view;
     view.webview.options = { enableScripts: true };
     this.refresh();
-    bindWebviewMessages(view.webview, this.context);
+    const unbind = bindWebviewMessages(view.webview);
+    this.unbind = unbind;
+    view.onDidDispose(() => {
+      unbind();
+      if (this.view === view) {
+        this.view = undefined;
+        this.unbind = undefined;
+      }
+    }, undefined, this.context.subscriptions);
   }
 
   refresh(sender?: vscode.Webview): void {
@@ -767,9 +886,33 @@ function register(context: vscode.ExtensionContext, command: string, handler: ()
 export function activate(context: vscode.ExtensionContext): void {
   setLocale(vscode.env.language);
   activeSidebarProvider = new HpmPeripheralViewProvider(context);
+  const workspaceHpmpcWatcher = vscode.workspace.createFileSystemWatcher('**/*.hpmpc');
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('hpmPeripheral.configView', activeSidebarProvider),
+    vscode.window.registerWebviewViewProvider('hpmPeripheral.configView', activeSidebarProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('hpmPeripheral.hpmpcPath')) {
+        rebindHpmpcWatcher(true);
+      }
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => rebindHpmpcWatcher(true)),
+    workspaceHpmpcWatcher,
+    workspaceHpmpcWatcher.onDidCreate(() => rebindHpmpcWatcher(true)),
+    workspaceHpmpcWatcher.onDidDelete(() => rebindHpmpcWatcher(true)),
+    {
+      dispose: () => {
+        clearHpmpcWatcher();
+        hpmpcReloadTask.dispose();
+        disposeHpmpcWorkingCopyWatchers();
+        for (const disposable of activeWebviews.values()) {
+          disposable.dispose();
+        }
+        activeWebviews.clear();
+      },
+    },
   );
+  rebindHpmpcWatcher();
   register(context, 'hpmPeripheral.openConfig', () => openConfigUi(context));
   register(context, 'hpmPeripheral.refreshConfig', refreshConfig);
   register(context, 'hpmPeripheral.generate', generateBoardGlue);

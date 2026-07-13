@@ -140,6 +140,7 @@ function findHpmpc(root: string, configuredPath = ''): string {
     if (fs.existsSync(absolute)) {
       return absolute;
     }
+    throw new Error(t('error.pinmuxFileNotFound', { path: absolute }));
   }
 
   const matches = walkFiles(root, (filePath) => filePath.toLowerCase().endsWith('.hpmpc'));

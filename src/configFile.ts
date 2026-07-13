@@ -285,8 +285,11 @@ export function loadOrCreateConfig(configPath: string, project: HpmProject): Per
 }
 
 export function normalizeConfig(project: HpmProject, parsed?: Partial<PeripheralConfig> | null): PeripheralConfig {
+  const availableFunctions = new Set(project.pinmuxFunctions);
   const selectedFunctions = Array.isArray(parsed?.project?.pinmux_functions)
-    ? parsed.project.pinmux_functions.filter((name): name is string => typeof name === 'string')
+    ? parsed.project.pinmux_functions.filter(
+        (name): name is string => typeof name === 'string' && availableFunctions.has(name),
+      )
     : [];
   const merged = defaultConfig(project, selectedFunctions);
   if (parsed?.spi) {

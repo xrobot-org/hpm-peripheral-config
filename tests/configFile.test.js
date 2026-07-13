@@ -5,7 +5,12 @@ const path = require('node:path');
 const test = require('node:test');
 const YAML = require('yaml');
 
-const { configurationErrors, configurationWarnings, writeLibxrConfig } = require('../out/configFile.js');
+const {
+  configurationErrors,
+  configurationWarnings,
+  normalizeConfig,
+  writeLibxrConfig,
+} = require('../out/configFile.js');
 
 function config() {
   return {
@@ -144,4 +149,49 @@ test('enabled HPM UART is generated configuration, not a limitation', () => {
     configurationErrors(value).some((error) => error.includes('tx_buffer_size')),
     true,
   );
+});
+
+test('hpmpc reload preserves behavior while replacing detected pins and peripherals', () => {
+  const previous = config();
+  previous.project.pinmux_functions.push('init_removed_pins');
+  const root = path.join(os.tmpdir(), 'hpm-reloaded-project');
+  const project = {
+    root,
+    hpmpcPath: path.join(root, 'boards', 'test', 'pinmux.hpmpc'),
+    boardDir: path.join(root, 'boards', 'test'),
+    boardName: 'hpm5361evklite',
+    boardC: path.join(root, 'boards', 'test', 'board.c'),
+    boardH: path.join(root, 'boards', 'test', 'board.h'),
+    pinmuxC: path.join(root, 'boards', 'test', 'pinmux.c'),
+    pinmuxH: path.join(root, 'boards', 'test', 'pinmux.h'),
+    socName: 'HPM5361',
+    packageName: 'BGA',
+    sdkName: 'HPM_SDK',
+    pinmuxFunctions: ['init_spi1_pins', 'init_uart3_pins'],
+    peripherals: [
+      {
+        instance: 'SPI1',
+        type: 'SPI',
+        index: 1,
+        pins: { CS0: 'PB01', SCLK: 'PB02' },
+        functions: ['init_spi1_pins'],
+        annotations: [],
+      },
+      {
+        instance: 'UART3',
+        type: 'UART',
+        index: 3,
+        pins: { TXD: 'PB15', RXD: 'PB14' },
+        functions: ['init_uart3_pins'],
+        annotations: [],
+      },
+    ],
+  };
+
+  const refreshed = normalizeConfig(project, previous);
+
+  assert.equal(refreshed.spi.SPI1.sclk_hz, previous.spi.SPI1.sclk_hz);
+  assert.deepEqual(refreshed.spi.SPI1.pins, { CS0: 'PB01', SCLK: 'PB02' });
+  assert.deepEqual(refreshed.uart.UART3.pins, { TXD: 'PB15', RXD: 'PB14' });
+  assert.deepEqual(refreshed.project.pinmux_functions, ['init_spi1_pins']);
 });

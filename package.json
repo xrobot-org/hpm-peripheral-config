@@ -3,7 +3,7 @@
   "publisher": "XRobot",
   "displayName": "%extension.displayName%",
   "description": "%extension.description%",
-  "version": "0.2.18",
+  "version": "0.2.19",
   "repository": {
     "type": "git",
     "url": "https://github.com/xrobot-org/hpm-peripheral-config.git"
