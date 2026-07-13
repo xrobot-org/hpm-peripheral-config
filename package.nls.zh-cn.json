@@ -11,6 +11,7 @@
   "configuration.title": "XRobot HPM 外设配置",
   "configuration.configPath.description": "相对于工作区根目录的外设行为配置文件。",
   "configuration.hpmpcPath.description": "可选的 .hpmpc 路径（相对于工作区根目录）；留空时自动检测。",
-  "configuration.sdkEnvPath.description": "用于定位官方工程生成器的 HPM SDK Env 目录。",
-  "configuration.runLibxrGenerator.description": "生成板级适配代码后运行 xr_hpm_cfg，重新生成 .config.yaml 和 User/app_main.cpp。"
+  "configuration.cliPath.description": "LibXR xr_hpm_cfg CLI 的路径或命令名（建议使用 5.3.0 或更高版本）。",
+  "configuration.cliTimeoutMs.description": "单次 xr_hpm_cfg 检查、验证或生成操作的最长等待时间（毫秒）。",
+  "configuration.sdkEnvPath.description": "用于定位官方工程生成器的 HPM SDK Env 目录。"
 }

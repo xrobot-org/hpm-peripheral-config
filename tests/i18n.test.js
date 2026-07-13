@@ -1,54 +1,16 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const YAML = require('yaml');
 
 const {
   currentLocale,
+  diagnosticMessage,
   messagesForLocale,
   setLocale,
   t,
   webviewMessages,
 } = require('../out/i18n.js');
-const { configurationErrors, writeConfig } = require('../out/configFile.js');
-
-function config() {
-  return {
-    version: 1,
-    project: {
-      board: 'hpm5361evklite',
-      soc: 'HPM5361',
-      hpmpc: 'boards/test/pinmux.hpmpc',
-      pinmux_functions: [],
-    },
-    spi: {
-      SPI1: {
-        auto_clock: true,
-        clock_source: 'pll0_clk0',
-        clock_divider: 48,
-        peripheral_clock_hz: 20_000_000,
-        prescaler: 'DIV_1',
-        actual_sclk_hz: 20_000_000,
-        enabled: true,
-        buffer_size: 0,
-        sclk_hz: 20_000_000,
-        spi_mode: 0,
-        clock_polarity: 'LOW',
-        clock_phase: 'EDGE_1',
-        cs_active_low: true,
-        double_buffer: false,
-        use_dma: false,
-        use_gpio_cs: true,
-        pins: { CS0: 'PA26', SCLK: 'PA27' },
-      },
-    },
-    i2c: {},
-    uart: {},
-    mcan: {},
-  };
-}
 
 test.afterEach(() => setLocale('en'));
 
@@ -93,32 +55,41 @@ test('named parameters can change order in Chinese without changing technical va
   assert.match(message, /400000 Hz/);
 });
 
-test('configuration diagnostics follow the active locale', () => {
-  const value = config();
+test('CLI setup and protocol guidance is localized without changing machine values', () => {
+  setLocale('en');
+  assert.match(t('error.cliNotFound', { executable: 'xr_hpm_cfg' }), /cliPath/);
+  assert.match(t('error.cliProtocol', { protocol: 1 }), /Protocol 1/);
+
+  setLocale('zh-cn');
+  assert.match(t('error.cliNotFound', { executable: 'xr_hpm_cfg' }), /未找到 HPM CLI/);
+  assert.match(t('error.cliProtocol', { protocol: 1 }), /协议 1/);
+  assert.match(t('warning.generatorVersionOld', { version: '5.2.4', minimum: '5.3.0' }), /5\.2\.4/);
+});
+
+test('diagnostics are localized by stable code without parsing backend English', () => {
+  const diagnostic = {
+    code: 'HPM_CAN_NOMINAL_TIMING_UNREACHABLE',
+    level: 'error',
+    peripheral: 'MCAN2',
+    field: 'bitrate',
+    message: 'BACKEND ENGLISH SENTINEL 80000000 Hz',
+  };
+
   setLocale('en');
   assert.equal(
-    configurationErrors(value).some((error) => error.includes('must be a positive integer')),
-    true,
+    diagnosticMessage(diagnostic),
+    'MCAN2: CAN nominal bitrate/sample point cannot be represented.',
   );
 
   setLocale('zh-cn');
-  const chineseErrors = configurationErrors(value);
-  assert.equal(chineseErrors.some((error) => error.includes('必须为正整数')), true);
-  assert.equal(chineseErrors.some((error) => error.includes('SPI1')), true);
-});
+  const chinese = diagnosticMessage(diagnostic);
+  assert.equal(chinese, 'MCAN2：无法实现 CAN 标称比特率或采样点。');
+  assert.doesNotMatch(chinese, /BACKEND|80000000/);
 
-test('locale does not change YAML keys or machine values', (tContext) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hpm-i18n-'));
-  tContext.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const file = path.join(directory, 'hpm_peripherals.yaml');
-
-  setLocale('zh-cn');
-  writeConfig(file, config());
-  const output = YAML.parse(fs.readFileSync(file, 'utf8'));
-  assert.equal(output.project.soc, 'HPM5361');
-  assert.equal(output.spi.SPI1.buffer_size, 0);
-  assert.equal(output.spi.SPI1.clock_polarity, 'LOW');
-  assert.equal(Object.keys(output).some((key) => /[\u4e00-\u9fff]/u.test(key)), false);
+  assert.equal(
+    diagnosticMessage({ ...diagnostic, code: 'HPM_FUTURE_CODE' }),
+    diagnostic.message,
+  );
 });
 
 test('Manifest language packs cover every package placeholder', () => {
