@@ -1,0 +1,16 @@
+{
+  "extension.displayName": "XRobot HPM Peripheral Config",
+  "extension.description": "Configure HPM on-chip peripheral behavior and generate board/pinmux glue code.",
+  "viewContainer.title": "XRobot HPM Peripherals",
+  "view.config.name": "Peripheral Config",
+  "command.openConfig.title": "XRobot HPM Peripheral Config: Open Config UI",
+  "command.generate.title": "XRobot HPM Peripheral Config: Generate Board Glue",
+  "command.refreshConfig.title": "XRobot HPM Peripheral Config: Refresh hpm_peripherals.yaml",
+  "command.openPinmux.title": "XRobot HPM Peripheral Config: Open Official Pinmux Tool",
+  "command.openProjectGenerator.title": "XRobot HPM Peripheral Config: Open Official Project Generator",
+  "configuration.title": "XRobot HPM Peripheral Config",
+  "configuration.configPath.description": "Peripheral behavior configuration file relative to workspace root.",
+  "configuration.hpmpcPath.description": "Optional .hpmpc path relative to workspace root. Empty means auto-detect.",
+  "configuration.sdkEnvPath.description": "HPM SDK Env directory used to locate the official project generator.",
+  "configuration.runLibxrGenerator.description": "Run xr_hpm_cfg after generating board glue to regenerate .config.yaml and User/app_main.cpp."
+}

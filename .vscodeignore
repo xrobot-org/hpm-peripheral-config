@@ -1,0 +1,13 @@
+.vscode/**
+.github/**
+.gitignore
+src/**
+tests/**
+*.vsix
+*.hpmpc
+.env*
+.xrobot-local/**
+tsconfig.json
+eslint.config.mjs
+package-lock.json
+**/*.map

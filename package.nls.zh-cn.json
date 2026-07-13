@@ -1,0 +1,16 @@
+{
+  "extension.displayName": "XRobot HPM 外设配置",
+  "extension.description": "配置 HPM 片上外设行为，并生成 board/pinmux 板级适配代码。",
+  "viewContainer.title": "XRobot HPM 外设",
+  "view.config.name": "外设配置",
+  "command.openConfig.title": "XRobot HPM 外设配置: 打开配置界面",
+  "command.generate.title": "XRobot HPM 外设配置: 生成板级适配代码",
+  "command.refreshConfig.title": "XRobot HPM 外设配置: 刷新 hpm_peripherals.yaml",
+  "command.openPinmux.title": "XRobot HPM 外设配置: 打开官方 Pinmux 工具",
+  "command.openProjectGenerator.title": "XRobot HPM 外设配置: 打开官方工程生成器",
+  "configuration.title": "XRobot HPM 外设配置",
+  "configuration.configPath.description": "相对于工作区根目录的外设行为配置文件。",
+  "configuration.hpmpcPath.description": "可选的 .hpmpc 路径（相对于工作区根目录）；留空时自动检测。",
+  "configuration.sdkEnvPath.description": "用于定位官方工程生成器的 HPM SDK Env 目录。",
+  "configuration.runLibxrGenerator.description": "生成板级适配代码后运行 xr_hpm_cfg，重新生成 .config.yaml 和 User/app_main.cpp。"
+}

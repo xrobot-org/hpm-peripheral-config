@@ -1,0 +1,124 @@
+{
+  "name": "hpm-peripheral-config",
+  "publisher": "XRobot",
+  "displayName": "%extension.displayName%",
+  "description": "%extension.description%",
+  "version": "0.2.18",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xrobot-org/hpm-peripheral-config.git"
+  },
+  "homepage": "https://github.com/xrobot-org/hpm-peripheral-config#readme",
+  "bugs": {
+    "url": "https://github.com/xrobot-org/hpm-peripheral-config/issues"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.108.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "HPMicro",
+    "HPM",
+    "LibXR",
+    "XRobot",
+    "embedded",
+    "pinmux"
+  ],
+  "activationEvents": [
+    "onView:hpmPeripheral.configView",
+    "onCommand:hpmPeripheral.generate",
+    "onCommand:hpmPeripheral.openConfig",
+    "onCommand:hpmPeripheral.openPinmux",
+    "onCommand:hpmPeripheral.openProjectGenerator",
+    "onCommand:hpmPeripheral.refreshConfig"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hpmPeripheral",
+          "title": "%viewContainer.title%",
+          "icon": "$(circuit-board)"
+        }
+      ]
+    },
+    "views": {
+      "hpmPeripheral": [
+        {
+          "id": "hpmPeripheral.configView",
+          "name": "%view.config.name%",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "hpmPeripheral.openConfig",
+        "title": "%command.openConfig.title%"
+      },
+      {
+        "command": "hpmPeripheral.generate",
+        "title": "%command.generate.title%"
+      },
+      {
+        "command": "hpmPeripheral.refreshConfig",
+        "title": "%command.refreshConfig.title%"
+      },
+      {
+        "command": "hpmPeripheral.openPinmux",
+        "title": "%command.openPinmux.title%"
+      },
+      {
+        "command": "hpmPeripheral.openProjectGenerator",
+        "title": "%command.openProjectGenerator.title%"
+      }
+    ],
+    "configuration": {
+      "title": "%configuration.title%",
+      "properties": {
+        "hpmPeripheral.configPath": {
+          "type": "string",
+          "default": "hpm_peripherals.yaml",
+          "description": "%configuration.configPath.description%"
+        },
+        "hpmPeripheral.hpmpcPath": {
+          "type": "string",
+          "default": "",
+          "description": "%configuration.hpmpcPath.description%"
+        },
+        "hpmPeripheral.sdkEnvPath": {
+          "type": "string",
+          "default": "D:/HPM/sdk_env",
+          "description": "%configuration.sdkEnvPath.description%"
+        },
+        "hpmPeripheral.runLibxrGenerator": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.runLibxrGenerator.description%"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "test": "npm run compile && node --test tests/*.test.js",
+    "lint": "eslint src",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.x",
+    "@types/vscode": "^1.108.0",
+    "@vscode/vsce": "^3.9.2",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.54.0"
+  }
+}
