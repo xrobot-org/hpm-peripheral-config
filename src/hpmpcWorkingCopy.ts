@@ -153,10 +153,15 @@ function watchWorkingCopy(sourcePath: string, workingCopyPath: string): void {
   if (existing) {
     fs.unwatchFile(existing.workingCopyPath, existing.listener);
   }
-  const listener = (current: fs.Stats, previous: fs.Stats): void => {
-    if (current.mtimeMs === previous.mtimeMs && current.size === previous.size) {
+  const initialStats = fs.statSync(resolvedWorkingCopyPath);
+  let observedMtimeMs = initialStats.mtimeMs;
+  let observedSize = initialStats.size;
+  const listener = (current: fs.Stats): void => {
+    if (current.mtimeMs === observedMtimeMs && current.size === observedSize) {
       return;
     }
+    observedMtimeMs = current.mtimeMs;
+    observedSize = current.size;
     try {
       copyWorkingContentToSource(resolvedSourcePath, resolvedWorkingCopyPath);
     } catch {
