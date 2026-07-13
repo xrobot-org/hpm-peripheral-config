@@ -154,7 +154,7 @@ function watchWorkingCopy(sourcePath: string, workingCopyPath: string): void {
     fs.unwatchFile(existing.workingCopyPath, existing.listener);
   }
   const listener = (current: fs.Stats, previous: fs.Stats): void => {
-    if (current.mtimeMs === previous.mtimeMs) {
+    if (current.mtimeMs === previous.mtimeMs && current.size === previous.size) {
       return;
     }
     try {

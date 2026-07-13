@@ -87,7 +87,9 @@ test('rebinds a shared signed working copy to the newly opened source hpmpc', as
   assert.equal(prepareHpmpcForOpen(workspaceRoot, sourceB), workingCopy);
   assert.equal(readName(workingCopy), 'source-b');
 
+  const unchangedMtime = fs.statSync(workingCopy).mtime;
   writeDocument(workingCopy, document('working-b-updated', true));
+  fs.utimesSync(workingCopy, unchangedMtime, unchangedMtime);
   await waitFor(() => readName(sourceB) === 'working-b-updated');
 
   assert.equal(readName(sourceA), 'source-a');
