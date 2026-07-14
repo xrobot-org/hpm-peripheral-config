@@ -174,6 +174,16 @@ function watchWorkingCopy(sourcePath: string, workingCopyPath: string): void {
     listener,
   });
   fs.watchFile(resolvedWorkingCopyPath, { interval: 500, persistent: false }, listener);
+  setImmediate(() => {
+    if (watchedWorkingCopies.get(key)?.listener !== listener) {
+      return;
+    }
+    try {
+      listener(fs.statSync(resolvedWorkingCopyPath));
+    } catch {
+      // The polling watcher will retry after a temporary replace or removal.
+    }
+  });
 }
 
 export function disposeHpmpcWorkingCopyWatchers(): void {
