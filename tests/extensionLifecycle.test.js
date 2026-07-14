@@ -2,8 +2,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+
+function sourceFragment(startMarker, endMarker, fromIndex = 0) {
+  const start = source.indexOf(startMarker, fromIndex);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(start, -1, startMarker);
+  assert.notEqual(end, -1, endMarker);
+  return source.slice(start, end);
+}
 
 test('webview operations do not wait for notification dismissal before clearing busy state', () => {
   assert.doesNotMatch(
@@ -57,6 +66,81 @@ test('hpmpc changes reload every open webview without a manual toolbar control',
   assert.match(source, /retainContextWhenHidden: true/);
   assert.match(source, /createFileSystemWatcher\('\*\*\/\*\.hpmpc'\)/);
   assert.match(source, /workspaceHpmpcWatcher\.onDidChange\(onWorkspaceHpmpcChanged\)/);
+});
+
+test('webview renders every inspect pinmux function as an independent checkbox', () => {
+  const pinmuxFunctions = [
+    'init_all_pins',
+    'init_uart0_pins',
+    'init_uart3_pins',
+    'init_i2c2_pins',
+    'init_i2c3_pins',
+    'init_spi1_pins',
+    'init_mcan0_pins',
+    'init_mcan2_pins',
+  ];
+  const functionList = { innerHTML: '' };
+  const statement = sourceFragment(
+    "document.getElementById('functionList').innerHTML = pinmuxFunctions.length",
+    "document.getElementById('content').innerHTML = groups.map",
+  );
+
+  vm.runInNewContext(statement, {
+    document: { getElementById: () => functionList },
+    escapeHtml: String,
+    pinmuxFunctions,
+    selected: new Set(['init_all_pins', 'init_mcan2_pins']),
+    ui: { noPinmuxFunctions: 'none' },
+  });
+
+  const renderedFunctions = [...functionList.innerHTML.matchAll(/data-function="([^"]+)"/g)]
+    .map((match) => match[1]);
+  assert.deepEqual(renderedFunctions, pinmuxFunctions);
+  assert.equal((functionList.innerHTML.match(/type="checkbox"/g) || []).length, pinmuxFunctions.length);
+  assert.doesNotMatch(functionList.innerHTML, /type="radio"/);
+  assert.match(functionList.innerHTML, /data-function="init_all_pins" checked/);
+  assert.match(functionList.innerHTML, /data-function="init_mcan2_pins" checked/);
+  assert.match(
+    source,
+    /if \(el\.checked\) selected\.add\(el\.dataset\.function\);[\s\S]*else selected\.delete\(el\.dataset\.function\);[\s\S]*config\.project\.pinmux_functions = Array\.from\(selected\);/,
+  );
+});
+
+test('init_all_pins visibility follows inspect peripheral function membership across groups', () => {
+  const peripherals = [
+    { instance: 'UART0', functions: ['init_uart0_pins'] },
+    { instance: 'UART3', functions: ['init_all_pins'] },
+    { instance: 'I2C2', functions: ['init_i2c2_pins'] },
+    { instance: 'I2C3', functions: ['init_all_pins'] },
+    { instance: 'SPI1', functions: ['init_all_pins'] },
+    { instance: 'MCAN0', functions: ['init_all_pins'] },
+    { instance: 'MCAN2', functions: ['init_all_pins'] },
+  ];
+  const config = {
+    project: { pinmux_functions: ['init_all_pins'] },
+    uart: { UART0: {}, UART3: {} },
+    i2c: { I2C2: {}, I2C3: {} },
+    spi: { SPI1: {} },
+    mcan: { MCAN0: {}, MCAN2: {} },
+  };
+  const mappingFunction = sourceFragment(
+    'function peripheralFunctionsForProject(',
+    '\nfunction webviewHtml(',
+  );
+  const returnExpression = /return ([\s\S]*);\s*}/.exec(mappingFunction);
+  assert.ok(returnExpression);
+  const peripheralFunctions = vm.runInNewContext(returnExpression[1], {
+    project: { inspection: { peripherals } },
+  });
+  const visibilityFunction = sourceFragment(
+    'function peripheralIsVisible(name) {',
+    '\n    function render()',
+  );
+  const candidates = ['UART0', 'UART3', 'I2C2', 'I2C3', 'SPI1', 'MCAN0', 'MCAN2'];
+  const context = { candidates, config, peripheralFunctions };
+  vm.runInNewContext(`${visibilityFunction}\nvisible = candidates.filter(peripheralIsVisible);`, context);
+
+  assert.deepEqual(Array.from(context.visible), ['UART3', 'I2C3', 'SPI1', 'MCAN0', 'MCAN2']);
 });
 
 test('mutation commands and webview writes share one extension-level queue', () => {
