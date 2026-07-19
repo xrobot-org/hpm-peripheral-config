@@ -92,6 +92,66 @@ test('diagnostics are localized by stable code without parsing backend English',
   );
 });
 
+test('unsupported Pinmux manager actions use the dedicated localized message', () => {
+  setLocale('en');
+  assert.equal(
+    diagnosticMessage({
+      code: 'HPM_PINMUX_MANAGER_UNSUPPORTED',
+      level: 'error',
+      message: 'BACKEND MANAGER SENTINEL',
+    }),
+    'The selected Pinmux function requires unsupported non-pin routing actions; no project files were changed.',
+  );
+});
+
+test('unsafe Pinmux function updates use the dedicated localized message', () => {
+  setLocale('en');
+  assert.equal(
+    diagnosticMessage({
+      code: 'HPM_PINMUX_FUNCTION_UPDATE_UNSAFE',
+      level: 'error',
+      message: 'BACKEND UPDATE SENTINEL',
+    }),
+    'The selected Pinmux function contains custom code and cannot be updated safely; no project files were changed.',
+  );
+});
+
+test('unavailable SPI hardware chip select uses the dedicated localized message', () => {
+  const diagnostic = {
+    code: 'HPM_SPI_HARDWARE_CS_INVALID',
+    level: 'error',
+    peripheral: 'SPI1',
+    field: 'hardware_cs_index',
+    message: 'BACKEND HARDWARE CS SENTINEL',
+  };
+
+  setLocale('en');
+  assert.equal(
+    diagnosticMessage(diagnostic),
+    'SPI1: selected hardware chip select is not available in the active Pinmux function.',
+  );
+  setLocale('zh-cn');
+  assert.equal(
+    diagnosticMessage(diagnostic),
+    'SPI1：当前 Pinmux 函数未配置所选硬件片选。',
+  );
+});
+
+test('SPI polarity diagnostics describe the SCLK idle level', () => {
+  const diagnostic = {
+    code: 'HPM_SPI_CPOL_INVALID',
+    level: 'error',
+    peripheral: 'SPI1',
+    field: 'clock_polarity',
+    message: 'BACKEND CPOL SENTINEL',
+  };
+
+  setLocale('en');
+  assert.equal(diagnosticMessage(diagnostic), 'SPI1: SCLK idle level must be LOW or HIGH.');
+  setLocale('zh-cn');
+  assert.equal(diagnosticMessage(diagnostic), 'SPI1：SCLK 空闲电平必须为 LOW 或 HIGH。');
+});
+
 test('Manifest language packs cover every package placeholder', () => {
   const root = path.join(__dirname, '..');
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -106,11 +166,35 @@ test('Manifest language packs cover every package placeholder', () => {
 });
 
 test('Webview receives localized strings instead of hard-coded English controls', () => {
+  setLocale('en');
+  const englishUi = webviewMessages();
+  assert.equal(
+    englishUi.uartDmaAutomatic,
+    'RX and TX each use one automatically allocated DMA channel.',
+  );
+  assert.equal(
+    englishUi.uartRxInterruptTxDma,
+    'RX uses UART FIFO interrupts; TX uses one automatically allocated DMA channel.',
+  );
+  assert.equal(englishUi.fieldClockPolarity, 'SCLK idle level');
+  assert.equal(englishUi.optionPolarityLow, 'Low (CPOL = 0)');
+  assert.equal(englishUi.optionPolarityHigh, 'High (CPOL = 1)');
+  assert.equal(englishUi.fieldHardwareChipSelect, 'Hardware chip select');
+
   setLocale('zh-cn');
   const ui = webviewMessages();
   assert.equal(ui.title, 'XRobot HPM 外设配置');
   assert.equal(ui.openProjectGenerator, '工程生成器');
   assert.equal(ui.fieldSamplePoint, '采样点');
+  assert.equal(ui.uartDmaAutomatic, 'RX 和 TX 各使用一个自动分配的 DMA 通道。');
+  assert.equal(
+    ui.uartRxInterruptTxDma,
+    'RX 使用 UART FIFO 中断；TX 使用一个自动分配的 DMA 通道。',
+  );
+  assert.equal(ui.fieldClockPolarity, 'SCLK 空闲电平');
+  assert.equal(ui.optionPolarityLow, '低（CPOL = 0）');
+  assert.equal(ui.optionPolarityHigh, '高（CPOL = 1）');
+  assert.equal(ui.fieldHardwareChipSelect, '硬件片选');
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
   assert.doesNotMatch(source, />Save YAML</);

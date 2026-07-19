@@ -53,7 +53,15 @@ function capabilities() {
       parity: ['NO_PARITY', 'EVEN', 'ODD'],
       data_bits: [5, 6, 7, 8],
       stop_bits: [1, 2],
-      dma: { automatic: true, channel_min: 0, channel_max: 31, channel_count: 32 },
+      dma: {
+        automatic: true,
+        channel_min: 0,
+        channel_max: 31,
+        channel_count: 32,
+        rx_mode: 'irq',
+        tx_mode: 'dma',
+        channels_per_uart: 1,
+      },
     },
     mcan: {
       modes: ['can', 'fdcan'],
@@ -101,6 +109,29 @@ function peripheralConfig() {
   };
 }
 
+function spiConfig() {
+  return {
+    auto_clock: true,
+    clock_source: 'osc24m',
+    clock_divider: 1,
+    peripheral_clock_hz: 24_000_000,
+    enabled: true,
+    buffer_size: 256,
+    sclk_hz: 12_000_000,
+    spi_mode: 0,
+    prescaler: 'DIV_2',
+    actual_sclk_hz: 12_000_000,
+    clock_polarity: 'LOW',
+    clock_phase: 'EDGE_1',
+    hardware_cs_index: 1,
+    cs_active_low: true,
+    double_buffer: false,
+    use_dma: false,
+    use_gpio_cs: false,
+    pins: { CS0: 'PA26', CS1: 'PA25', SCLK: 'PA27' },
+  };
+}
+
 function inspectEnvelope() {
   return baseEnvelope({
     project: {
@@ -118,6 +149,9 @@ function inspectEnvelope() {
       pins: { TXD: 'PB15', RXD: 'PB14' },
       functions: ['init_uart3_pins'],
       annotations: ['console'],
+      function_pins: {
+        init_uart3_pins: { TXD: 'PB15', RXD: 'PB14' },
+      },
     }],
     clock_functions: ['init_clocks'],
     clock_sources: [{ id: 'osc24m', c_symbol: 'clk_src_osc24m', hz: 24_000_000 }],
@@ -142,7 +176,24 @@ test('inspect envelope accepts one strict JSON document', () => {
   assert.equal(result.protocol_version, 1);
   assert.equal(result.project.board, 'hpm5361evklite');
   assert.equal(result.peripherals[0].pins.TXD, 'PB15');
+  assert.equal(result.peripherals[0].function_pins.init_uart3_pins.RXD, 'PB14');
   assert.deepEqual(result.capabilities.mcan.modes, ['can', 'fdcan']);
+  assert.equal(result.capabilities.uart.dma.rx_mode, 'irq');
+  assert.equal(result.capabilities.uart.dma.tx_mode, 'dma');
+  assert.equal(result.capabilities.uart.dma.channels_per_uart, 1);
+});
+
+test('inspect validates optional per-function pin metadata and accepts legacy omission', () => {
+  const legacy = inspectEnvelope();
+  delete legacy.peripherals[0].function_pins;
+  assert.equal(parseInspectEnvelope(legacy).peripherals[0].function_pins, undefined);
+
+  const malformed = inspectEnvelope();
+  malformed.peripherals[0].function_pins.init_uart3_pins.RXD = 14;
+  assert.throws(
+    () => parseInspectEnvelope(malformed),
+    /function_pins\.init_uart3_pins\.RXD.*string/,
+  );
 });
 
 test('inspect rejects incomplete capability data used by the webview', () => {
@@ -151,6 +202,41 @@ test('inspect rejects incomplete capability data used by the webview', () => {
   assert.throws(
     () => parseInspectEnvelope(malformed),
     /capabilities\.uart\.parity.*missing/,
+  );
+});
+
+test('inspect accepts legacy UART DMA capabilities without mode metadata', () => {
+  const legacy = inspectEnvelope();
+  delete legacy.capabilities.uart.dma.rx_mode;
+  delete legacy.capabilities.uart.dma.tx_mode;
+  delete legacy.capabilities.uart.dma.channels_per_uart;
+
+  const result = parseInspectEnvelope(legacy);
+
+  assert.equal(result.capabilities.uart.dma.rx_mode, undefined);
+  assert.equal(result.capabilities.uart.dma.tx_mode, undefined);
+  assert.equal(result.capabilities.uart.dma.channels_per_uart, undefined);
+});
+
+test('inspect strictly validates optional UART DMA mode metadata', () => {
+  for (const [field, value] of [
+    ['rx_mode', 'poll'],
+    ['tx_mode', 'irq'],
+    ['channels_per_uart', 3],
+  ]) {
+    const malformed = inspectEnvelope();
+    malformed.capabilities.uart.dma[field] = value;
+    assert.throws(
+      () => parseInspectEnvelope(malformed),
+      new RegExp(`capabilities\\.uart\\.dma\\.${field}`),
+    );
+  }
+
+  const inconsistent = inspectEnvelope();
+  inconsistent.capabilities.uart.dma.rx_mode = 'dma';
+  assert.throws(
+    () => parseInspectEnvelope(inconsistent),
+    /capabilities\.uart\.dma\.channels_per_uart.*must be 2/,
   );
 });
 
@@ -167,6 +253,35 @@ test('validate envelope checks the normalized peripheral config at runtime', () 
     (error) => error instanceof HpmProtocolError &&
       error.message.includes('normalized_config.uart.UART3.data_bits'),
   );
+});
+
+test('validation accepts an optional hardware CS index and keeps legacy configs compatible', () => {
+  const selected = validateEnvelope();
+  selected.normalized_config.spi.SPI1 = spiConfig();
+  assert.equal(
+    parseValidateEnvelope(selected).normalized_config.spi.SPI1.hardware_cs_index,
+    1,
+  );
+
+  const legacy = validateEnvelope();
+  legacy.normalized_config.spi.SPI1 = spiConfig();
+  delete legacy.normalized_config.spi.SPI1.hardware_cs_index;
+  assert.equal(
+    parseValidateEnvelope(legacy).normalized_config.spi.SPI1.hardware_cs_index,
+    undefined,
+  );
+});
+
+test('validation rejects hardware CS indices outside integer range 0 through 3', () => {
+  for (const invalidIndex of [-1, 4, 1.5, '1']) {
+    const malformed = validateEnvelope();
+    malformed.normalized_config.spi.SPI1 = spiConfig();
+    malformed.normalized_config.spi.SPI1.hardware_cs_index = invalidIndex;
+    assert.throws(
+      () => parseValidateEnvelope(malformed),
+      /normalized_config\.spi\.SPI1\.hardware_cs_index/,
+    );
+  }
 });
 
 test('invalid validation envelopes preserve transient field values for diagnostics', () => {

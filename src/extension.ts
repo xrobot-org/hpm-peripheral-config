@@ -413,6 +413,17 @@ function projectMeta(project: CurrentProject): string {
   return `${info.board} / ${info.soc} / ${info.hpmpc}`;
 }
 
+function peripheralFunctionPinsForProject(
+  project: CurrentProject,
+): Record<string, Record<string, Record<string, string>>> {
+  return Object.fromEntries(
+    project.inspection.peripherals.map((peripheral) => [
+      peripheral.instance.toLowerCase(),
+      peripheral.function_pins ?? {},
+    ]),
+  );
+}
+
 function peripheralFunctionsForProject(project: CurrentProject): Record<string, string[]> {
   return Object.fromEntries(
     project.inspection.peripherals.map((peripheral) => [
@@ -436,6 +447,7 @@ function webviewHtml(
   const clockSources = JSON.stringify(project.inspection.clock_sources).replace(/</g, '\\u003c');
   const capabilities = JSON.stringify(project.inspection.capabilities).replace(/</g, '\\u003c');
   const peripheralFunctions = JSON.stringify(peripheralFunctionsForProject(project)).replace(/</g, '\\u003c');
+  const peripheralFunctionPins = JSON.stringify(peripheralFunctionPinsForProject(project)).replace(/</g, '\\u003c');
   const initialErrors = JSON.stringify(localizedDiagnostics(validation.errors)).replace(/</g, '\\u003c');
   const initialWarnings = JSON.stringify(localizedDiagnostics(validation.warnings)).replace(/</g, '\\u003c');
   return `<!doctype html>
@@ -504,6 +516,7 @@ function webviewHtml(
     let clockSources = ${clockSources};
     let capabilities = ${capabilities};
     let peripheralFunctions = ${peripheralFunctions};
+    let peripheralFunctionPins = ${peripheralFunctionPins};
     let validationErrors = ${initialErrors};
     let validationWarnings = ${initialWarnings};
     const groups = [
@@ -551,9 +564,13 @@ function webviewHtml(
         ? item.message
         : String(item);
     }
+    function overallValidationWarnings(warnings) {
+      return warnings.filter(item => !item || typeof item !== 'object' ||
+        item.code !== 'HPM_SPI_HARDWARE_CS_FIXED');
+    }
     function renderValidation() {
       const element = document.getElementById('validation');
-      const warnings = validationWarnings;
+      const warnings = overallValidationWarnings(validationWarnings);
       if (validationErrors.length) {
         element.className = 'validation error';
         element.innerHTML = '<div class="validation-title">' +
@@ -646,6 +663,82 @@ function webviewHtml(
       })) + '</div>';
       return html;
     }
+    function uartDmaStatus() {
+      return capabilities.uart.dma.rx_mode === 'irq'
+        ? ui.uartRxInterruptTxDma
+        : ui.uartDmaAutomatic;
+    }
+    function hardwareChipSelectOptions(pins) {
+      const byIndex = new Map();
+      for (const role of ['CS', 'CSN', 'CS0', 'CS1', 'CS2', 'CS3']) {
+        const pad = pins && pins[role];
+        if (typeof pad !== 'string' || !pad) continue;
+        const index = role === 'CS' || role === 'CSN' ? 0 : Number(role.slice(2));
+        byIndex.set(index, { value: index, label: 'CS' + index + ' — ' + pad });
+      }
+      return Array.from(byIndex.values()).sort((left, right) => left.value - right.value);
+    }
+    function pinmuxFunctionsForPeripheral(name) {
+      const functions = peripheralFunctions[name.toLowerCase()];
+      return Array.isArray(functions) ? functions : [];
+    }
+    function pinsForPinmuxFunction(name, functionName) {
+      const functions = peripheralFunctionPins[name.toLowerCase()];
+      const pins = functions && functions[functionName];
+      return pins && typeof pins === 'object' ? pins : {};
+    }
+    function functionHasChipSelect(name, functionName) {
+      const pins = pinsForPinmuxFunction(name, functionName);
+      return ['CS', 'CSN', 'CS0', 'CS1', 'CS2', 'CS3']
+        .some(role => typeof pins[role] === 'string' && pins[role]);
+    }
+    function gpioChipSelectFunctions(name) {
+      const owner = name.toLowerCase();
+      return pinmuxFunctionsForPeripheral(name).filter(functionName =>
+        functionName.toLowerCase().includes('gpio_as_cs') &&
+        functionHasChipSelect(name, functionName) &&
+        !Object.entries(peripheralFunctions).some(([instance, functions]) =>
+          instance !== owner && Array.isArray(functions) && functions.includes(functionName)));
+    }
+    function gpioChipSelectFunction(name) {
+      const candidates = gpioChipSelectFunctions(name);
+      const selected = new Set(config.project.pinmux_functions || []);
+      const selectedCandidates = candidates.filter(functionName => selected.has(functionName));
+      if (selectedCandidates.length === 1) return selectedCandidates[0];
+      if (selectedCandidates.length > 1) return '';
+      return candidates.length === 1 ? candidates[0] : '';
+    }
+    function toggleSpiGpioChipSelect(name, enabled) {
+      const gpioFunction = gpioChipSelectFunction(name);
+      if (!gpioFunction) return false;
+
+      const peripheralPinmuxFunctions = pinmuxFunctionsForPeripheral(name);
+      const selected = (config.project.pinmux_functions || [])
+        .filter(functionName => functionName !== gpioFunction);
+      if (enabled) {
+        selected.push(gpioFunction);
+      } else {
+        const hasHardwareFunction = selected.some(functionName =>
+          peripheralPinmuxFunctions.includes(functionName) &&
+          !functionName.toLowerCase().includes('gpio_as_cs') &&
+          functionHasChipSelect(name, functionName));
+        if (!hasHardwareFunction) {
+          const hardwareFunctions = peripheralPinmuxFunctions.filter(functionName =>
+            !functionName.toLowerCase().includes('gpio_as_cs') &&
+            functionHasChipSelect(name, functionName));
+          const canonical = 'init_' + name.toLowerCase() + '_pins';
+          const hardwareFunction = hardwareFunctions.includes(canonical)
+            ? canonical
+            : (hardwareFunctions.length === 1 ? hardwareFunctions[0] : '');
+          if (!hardwareFunction) return false;
+          if (!selected.includes(hardwareFunction)) selected.push(hardwareFunction);
+        }
+      }
+      config.project.pinmux_functions = selected;
+      config.spi[name].use_gpio_cs = enabled;
+      configRevision += 1;
+      return true;
+    }
     function card(group, name, value) {
       const cardKey = group + '.' + name;
       const isOpen = cardOpenState.has(cardKey) ? cardOpenState.get(cardKey) : Boolean(value.enabled);
@@ -667,7 +760,7 @@ function webviewHtml(
         html += field(ui.fieldTxBufferSize, input('number', group + '.' + name + '.tx_buffer_size', value.tx_buffer_size, 'min="2"'));
         html += field(ui.fieldTxQueueSize, input('number', group + '.' + name + '.tx_queue_size', value.tx_queue_size, 'min="1"'));
         html += clockFields(group, name, value);
-        html += '<div class="clock-status">' + escapeHtml(ui.uartDmaAutomatic) + '</div>';
+        html += '<div class="clock-status">' + escapeHtml(uartDmaStatus()) + '</div>';
       } else if (group === 'i2c') {
         html += field(ui.fieldBusHz, enumSelect(group + '.' + name + '.bus_hz', value.bus_hz,
           capabilities.i2c.bus_rates.map(rate => ({
@@ -714,6 +807,14 @@ function webviewHtml(
         if (value.use_gpio_cs) {
           html += field(ui.fieldCsActiveLow, input('checkbox', group + '.' + name + '.cs_active_low', value.cs_active_low));
         } else {
+          const hardwareCsOptions = hardwareChipSelectOptions(value.pins);
+          if (hardwareCsOptions.length) {
+            html += field(ui.fieldHardwareChipSelect, enumSelect(
+              group + '.' + name + '.hardware_cs_index',
+              value.hardware_cs_index,
+              hardwareCsOptions,
+            ));
+          }
           html += '<div class="warning">' + escapeHtml(ui.hardwareCsFixed) + '</div>';
         }
         html += clockFields(group, name, value);
@@ -721,7 +822,15 @@ function webviewHtml(
           hz: numberFormatter.format(Number(value.actual_sclk_hz || 0)),
           prescaler: value.prescaler,
         })) + '</div>';
-        html += field(ui.fieldUseGpioCs, input('checkbox', group + '.' + name + '.use_gpio_cs', value.use_gpio_cs));
+        const gpioCsFunction = gpioChipSelectFunction(name);
+        if (gpioCsFunction || value.use_gpio_cs) {
+          html += field(ui.fieldUseGpioCs, input(
+            'checkbox',
+            group + '.' + name + '.use_gpio_cs',
+            value.use_gpio_cs,
+            gpioCsFunction ? '' : 'disabled',
+          ));
+        }
       } else if (group === 'mcan') {
         html += field(ui.fieldMode, enumSelect(group + '.' + name + '.mode', value.mode,
           options(capabilities.mcan.modes, { can: 'CAN', fdcan: 'FDCAN' })));
@@ -817,6 +926,7 @@ function webviewHtml(
       if (operationBusy) return;
       const el = event.target;
       if (!el.dataset || !el.dataset.path) return;
+      if (el.dataset.path.endsWith('.use_gpio_cs')) return;
       setPath(el.dataset.path, el.type === 'checkbox' ? el.checked : el.value, el.type === 'checkbox');
       scheduleValidation();
     });
@@ -839,12 +949,19 @@ function webviewHtml(
         return;
       }
       if (!el.dataset || !el.dataset.path) return;
+      if (el.dataset.path.endsWith('.use_gpio_cs')) {
+        const parts = el.dataset.path.split('.');
+        const changed = parts.length === 3 && parts[0] === 'spi' &&
+          toggleSpiGpioChipSelect(parts[1], el.checked);
+        render();
+        if (changed) scheduleValidation();
+        return;
+      }
       setPath(el.dataset.path, el.type === 'checkbox' ? el.checked : el.value, el.type === 'checkbox');
       if (
         el.dataset.path.endsWith('.mode') ||
         el.dataset.path.endsWith('.enabled') ||
         el.dataset.path.endsWith('.auto_clock') ||
-        el.dataset.path.endsWith('.use_gpio_cs') ||
         el.dataset.path.endsWith('.clock_source') ||
         el.dataset.path.endsWith('.clock_divider') ||
         el.dataset.path.endsWith('.sclk_hz')
@@ -880,6 +997,7 @@ function webviewHtml(
         clockSources = message.clockSources || [];
         capabilities = message.capabilities || capabilities;
         peripheralFunctions = message.peripheralFunctions || {};
+        peripheralFunctionPins = message.peripheralFunctionPins || {};
         validationErrors = message.errors || [];
         validationWarnings = message.warnings || [];
         document.getElementById('meta').textContent = message.meta || '';
@@ -1004,6 +1122,7 @@ function bindWebviewMessages(
             clockSources: currentProject.inspection.clock_sources,
             capabilities: currentProject.inspection.capabilities,
             peripheralFunctions: peripheralFunctionsForProject(currentProject),
+            peripheralFunctionPins: peripheralFunctionPinsForProject(currentProject),
             errors: localizedDiagnostics(validation.errors),
             warnings: localizedDiagnostics(validation.warnings),
           });

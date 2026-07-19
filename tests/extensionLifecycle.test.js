@@ -200,6 +200,35 @@ test('busy operations freeze the whole form and invalidate pending validation', 
   assert.equal((source.match(/if \(operationBusy\) return;/g) || []).length, 2);
 });
 
+test('hardware CS fixed warning stays local to the SPI card', () => {
+  const filterFunction = sourceFragment(
+    'function overallValidationWarnings(warnings) {',
+    '\n    function renderValidation()',
+  );
+  const context = {
+    warnings: [
+      { code: 'HPM_SPI_HARDWARE_CS_FIXED', message: 'local SPI warning' },
+      { code: 'HPM_SPI_CLOCK_ADJUSTED', message: 'overall warning' },
+      'legacy warning',
+    ],
+  };
+  vm.runInNewContext(
+    `${filterFunction}\nresult = overallValidationWarnings(warnings);`,
+    context,
+  );
+
+  assert.deepEqual(Array.from(context.result, (item) => (
+    typeof item === 'object' ? { ...item } : item
+  )), [
+    { code: 'HPM_SPI_CLOCK_ADJUSTED', message: 'overall warning' },
+    'legacy warning',
+  ]);
+  assert.match(
+    source,
+    /const warnings = overallValidationWarnings\(validationWarnings\);/,
+  );
+});
+
 test('watcher rebinding ignores stale reverse-order inspection results', () => {
   const start = source.indexOf('async function rebindHpmpcWatcher(');
   const end = source.indexOf('function peripheralConfigArgument(', start);
@@ -269,6 +298,304 @@ test('extension delegates project data, validation, and generation to the HPM CL
   assert.doesNotMatch(source, /function normalizeSpiConfig\(/);
   assert.doesNotMatch(source, /function recalculateSpiClock\(/);
   assert.doesNotMatch(source, /function configurationErrors\(/);
+});
+
+test('UART status follows RX mode and defaults legacy capabilities to RX/TX DMA', () => {
+  const statusFunction = sourceFragment(
+    'function uartDmaStatus() {',
+    '\n    function card(',
+  );
+  const ui = {
+    uartDmaAutomatic: 'DMA/DMA',
+    uartRxInterruptTxDma: 'IRQ/DMA',
+  };
+  const renderStatus = (rxMode) => {
+    const context = {
+      capabilities: { uart: { dma: { rx_mode: rxMode } } },
+      ui,
+    };
+    vm.runInNewContext(`${statusFunction}\nstatus = uartDmaStatus();`, context);
+    return context.status;
+  };
+
+  assert.equal(renderStatus('irq'), 'IRQ/DMA');
+  assert.equal(renderStatus('dma'), 'DMA/DMA');
+  assert.equal(renderStatus(undefined), 'DMA/DMA');
+});
+
+test('SPI hardware chip-select options are deduplicated, sorted, and bound as a number', () => {
+  const optionsFunction = sourceFragment(
+    'function hardwareChipSelectOptions(pins) {',
+    '\n    function card(',
+  );
+  const optionsContext = {
+    pins: {
+      CS3: 'PB03',
+      CSN: 'PB00',
+      CS1: 'PB01',
+      CS: 'PB04',
+      CS0: 'PA26',
+      MOSI: 'PA29',
+    },
+  };
+  vm.runInNewContext(
+    `${optionsFunction}\nresult = hardwareChipSelectOptions(pins);`,
+    optionsContext,
+  );
+  assert.deepEqual(Array.from(optionsContext.result, (option) => ({ ...option })), [
+    { value: 0, label: 'CS0 — PA26' },
+    { value: 1, label: 'CS1 — PB01' },
+    { value: 3, label: 'CS3 — PB03' },
+  ]);
+
+  assert.deepEqual(
+    Array.from((() => {
+      const context = { pins: { SCLK: 'PA27', MISO: 'PA28' } };
+      vm.runInNewContext(
+        `${optionsFunction}\nresult = hardwareChipSelectOptions(pins);`,
+        context,
+      );
+      return context.result;
+    })()),
+    [],
+  );
+  assert.match(
+    source,
+    /if \(hardwareCsOptions\.length\)[\s\S]*ui\.fieldHardwareChipSelect[\s\S]*\.hardware_cs_index/,
+  );
+  assert.match(
+    source,
+    /if \(value\.use_gpio_cs\)[\s\S]*else \{[\s\S]*hardwareChipSelectOptions\(value\.pins\)/,
+  );
+
+  const setPathFunction = sourceFragment(
+    'function setPath(path, raw, isCheckbox) {',
+    '\n    document.addEventListener(\'input\'',
+  );
+  const pathContext = {
+    config: { spi: { SPI1: {} } },
+    configRevision: 0,
+  };
+  vm.runInNewContext(
+    `${setPathFunction}\nsetPath('spi.SPI1.hardware_cs_index', '2', false);`,
+    pathContext,
+  );
+  assert.equal(pathContext.config.spi.SPI1.hardware_cs_index, 2);
+});
+
+test('GPIO chip-select toggle updates pinmux selection without losing init_all_pins', () => {
+  const helpers = sourceFragment(
+    'function pinmuxFunctionsForPeripheral(name) {',
+    '\n    function card(',
+  );
+  const gpioFunction = 'init_spi1_pins_with_gpio_as_cs';
+  const context = {
+    peripheralFunctions: {
+      spi1: ['init_all_pins', 'init_spi1_pins', gpioFunction],
+      mcan0: ['init_all_pins'],
+    },
+    peripheralFunctionPins: {
+      spi1: {
+        init_all_pins: { CS0: 'PA26' },
+        init_spi1_pins: { CS0: 'PA26' },
+        [gpioFunction]: { CS0: 'PA26' },
+      },
+    },
+    config: {
+      project: { pinmux_functions: ['init_all_pins'] },
+      spi: { SPI1: { use_gpio_cs: false } },
+    },
+    configRevision: 0,
+  };
+  vm.runInNewContext(
+    `${helpers}\n` +
+    `enabled = toggleSpiGpioChipSelect('SPI1', true);\n` +
+    'afterEnable = [...config.project.pinmux_functions];\n' +
+    `enabledAgain = toggleSpiGpioChipSelect('SPI1', true);\n` +
+    'afterEnableAgain = [...config.project.pinmux_functions];\n' +
+    `disabled = toggleSpiGpioChipSelect('SPI1', false);\n` +
+    'afterDisable = [...config.project.pinmux_functions];',
+    context,
+  );
+
+  assert.equal(context.enabled, true);
+  assert.deepEqual(Array.from(context.afterEnable), ['init_all_pins', gpioFunction]);
+  assert.equal(context.enabledAgain, true);
+  assert.deepEqual(Array.from(context.afterEnableAgain), ['init_all_pins', gpioFunction]);
+  assert.equal(context.disabled, true);
+  assert.deepEqual(Array.from(context.afterDisable), ['init_all_pins']);
+  assert.equal(context.config.spi.SPI1.use_gpio_cs, false);
+  assert.equal(context.configRevision, 3);
+});
+
+test('GPIO chip-select toggle moves the override last and does not guess ambiguous functions', () => {
+  const helpers = sourceFragment(
+    'function pinmuxFunctionsForPeripheral(name) {',
+    '\n    function card(',
+  );
+  const gpioFunction = 'init_spi1_pins_with_gpio_as_cs';
+  const reorderContext = {
+    peripheralFunctions: {
+      spi1: [gpioFunction, 'init_all_pins', 'init_spi1_pins'],
+      mcan0: ['init_all_pins'],
+    },
+    peripheralFunctionPins: {
+      spi1: {
+        [gpioFunction]: { CS0: 'PA26' },
+        init_all_pins: { CS0: 'PA26' },
+        init_spi1_pins: { CS0: 'PA26' },
+      },
+    },
+    config: {
+      project: { pinmux_functions: [gpioFunction, 'init_all_pins'] },
+      spi: { SPI1: { use_gpio_cs: true } },
+    },
+    configRevision: 0,
+  };
+  vm.runInNewContext(
+    `${helpers}\nresult = toggleSpiGpioChipSelect('SPI1', true);`,
+    reorderContext,
+  );
+  assert.equal(reorderContext.result, true);
+  assert.deepEqual(
+    Array.from(reorderContext.config.project.pinmux_functions),
+    ['init_all_pins', gpioFunction],
+  );
+
+  const ambiguousContext = {
+    peripheralFunctions: {
+      spi1: [
+        'init_spi1_pins_with_gpio_as_cs_a',
+        'init_spi1_pins_with_gpio_as_cs_b',
+      ],
+    },
+    peripheralFunctionPins: {
+      spi1: {
+        init_spi1_pins_with_gpio_as_cs_a: { CS0: 'PA26' },
+        init_spi1_pins_with_gpio_as_cs_b: { CS0: 'PB10' },
+      },
+    },
+    config: {
+      project: { pinmux_functions: [] },
+      spi: { SPI1: { use_gpio_cs: false } },
+    },
+    configRevision: 0,
+  };
+  vm.runInNewContext(
+    `${helpers}\nresult = toggleSpiGpioChipSelect('SPI1', true);`,
+    ambiguousContext,
+  );
+  assert.equal(ambiguousContext.result, false);
+  assert.deepEqual(Array.from(ambiguousContext.config.project.pinmux_functions), []);
+  assert.equal(ambiguousContext.config.spi.SPI1.use_gpio_cs, false);
+  assert.equal(ambiguousContext.configRevision, 0);
+});
+
+test('GPIO chip-select toggle restores a verified custom hardware function when needed', () => {
+  const helpers = sourceFragment(
+    'function pinmuxFunctionsForPeripheral(name) {',
+    '\n    function card(',
+  );
+  const gpioFunction = 'board_spi1_pins_with_gpio_as_cs';
+  const hardwareFunction = 'board_spi1_bus_pins';
+  const context = {
+    peripheralFunctions: {
+      spi1: [hardwareFunction, gpioFunction],
+    },
+    peripheralFunctionPins: {
+      spi1: {
+        [hardwareFunction]: { CSN: 'PA26', SCLK: 'PA27' },
+        [gpioFunction]: { CS0: 'PA26', SCLK: 'PA27' },
+      },
+    },
+    config: {
+      project: { pinmux_functions: [gpioFunction] },
+      spi: { SPI1: { use_gpio_cs: true } },
+    },
+    configRevision: 0,
+  };
+  vm.runInNewContext(
+    `${helpers}\nresult = toggleSpiGpioChipSelect('SPI1', false);`,
+    context,
+  );
+
+  assert.equal(context.result, true);
+  assert.deepEqual(Array.from(context.config.project.pinmux_functions), [hardwareFunction]);
+  assert.equal(context.config.spi.SPI1.use_gpio_cs, false);
+});
+
+test('GPIO chip-select toggle does not mistake SPI data pins for hardware CS', () => {
+  const helpers = sourceFragment(
+    'function pinmuxFunctionsForPeripheral(name) {',
+    '\n    function card(',
+  );
+  const gpioFunction = 'init_spi1_pins_with_gpio_as_cs';
+  const dataFunction = 'init_spi1_data_pins';
+  const context = {
+    peripheralFunctions: { spi1: [dataFunction, gpioFunction] },
+    peripheralFunctionPins: {
+      spi1: {
+        [dataFunction]: { SCLK: 'PA27', MISO: 'PA28', MOSI: 'PA29' },
+        [gpioFunction]: { CS0: 'PA26', SCLK: 'PA27' },
+      },
+    },
+    config: {
+      project: { pinmux_functions: [dataFunction, gpioFunction] },
+      spi: { SPI1: { use_gpio_cs: true } },
+    },
+    configRevision: 0,
+  };
+  vm.runInNewContext(
+    `${helpers}\nresult = toggleSpiGpioChipSelect('SPI1', false);`,
+    context,
+  );
+
+  assert.equal(context.result, false);
+  assert.deepEqual(
+    Array.from(context.config.project.pinmux_functions),
+    [dataFunction, gpioFunction],
+  );
+  assert.equal(context.config.spi.SPI1.use_gpio_cs, true);
+  assert.equal(context.configRevision, 0);
+  assert.match(
+    source,
+    /const changed = parts\.length === 3[\s\S]*render\(\);[\s\S]*if \(changed\) scheduleValidation\(\);/,
+  );
+});
+
+test('shared GPIO chip-select functions are not changed by one SPI card', () => {
+  const helpers = sourceFragment(
+    'function pinmuxFunctionsForPeripheral(name) {',
+    '\n    function card(',
+  );
+  const shared = 'init_shared_spi_pins_with_gpio_as_cs';
+  const context = {
+    peripheralFunctions: {
+      spi1: [shared],
+      spi2: [shared],
+    },
+    peripheralFunctionPins: {
+      spi1: { [shared]: { CS0: 'PA26' } },
+      spi2: { [shared]: { CS0: 'PB10' } },
+    },
+    config: {
+      project: { pinmux_functions: [shared] },
+      spi: {
+        SPI1: { use_gpio_cs: true },
+        SPI2: { use_gpio_cs: true },
+      },
+    },
+    configRevision: 0,
+  };
+  vm.runInNewContext(
+    `${helpers}\nresult = toggleSpiGpioChipSelect('SPI1', false);`,
+    context,
+  );
+
+  assert.equal(context.result, false);
+  assert.deepEqual(Array.from(context.config.project.pinmux_functions), [shared]);
+  assert.equal(context.config.spi.SPI1.use_gpio_cs, true);
+  assert.equal(context.configRevision, 0);
 });
 
 test('CLI setup and compatibility failures use localized blocking guidance', () => {

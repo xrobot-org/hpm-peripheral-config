@@ -48,7 +48,15 @@ const INSPECT_ENVELOPE = {
       parity: ['NO_PARITY', 'EVEN', 'ODD'],
       data_bits: [5, 6, 7, 8],
       stop_bits: [1, 2],
-      dma: { automatic: true, channel_min: 0, channel_max: 31, channel_count: 32 },
+      dma: {
+        automatic: true,
+        channel_min: 0,
+        channel_max: 31,
+        channel_count: 32,
+        rx_mode: 'irq',
+        tx_mode: 'dma',
+        channels_per_uart: 1,
+      },
     },
     mcan: {
       modes: ['can', 'fdcan'],
@@ -221,6 +229,8 @@ test('inspect uses shell-free exact argv, cwd, and preserves stderr', async (tCo
   assert.equal(result.exitCode, 0);
   assert.equal(result.stderr, 'inspect warning\n');
   assert.equal(result.envelope.project.board, 'hpm5361evklite');
+  assert.equal(result.envelope.capabilities.uart.dma.rx_mode, 'irq');
+  assert.equal(result.envelope.capabilities.uart.dma.channels_per_uart, 1);
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'hpmCli.ts'), 'utf8');
   assert.match(source, /shell:\s*false/);

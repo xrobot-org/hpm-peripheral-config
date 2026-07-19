@@ -21,6 +21,7 @@ export type SpiConfigDto = ClockSettingsDto & {
   actual_sclk_hz: number;
   clock_polarity: 'LOW' | 'HIGH';
   clock_phase: 'EDGE_1' | 'EDGE_2';
+  hardware_cs_index?: 0 | 1 | 2 | 3;
   cs_active_low: boolean;
   double_buffer: boolean;
   use_dma: boolean;
@@ -116,6 +117,7 @@ export type InspectPeripheralDto = {
   pins: Record<string, string>;
   functions: string[];
   annotations: string[];
+  function_pins?: Record<string, Record<string, string>>;
 };
 
 export type InspectClockSourceDto = {
@@ -156,6 +158,9 @@ export type InspectCapabilitiesDto = {
       channel_min: number;
       channel_max: number;
       channel_count: number;
+      rx_mode?: 'dma' | 'irq';
+      tx_mode?: 'dma';
+      channels_per_uart?: number;
     };
   };
   mcan: {
@@ -320,6 +325,10 @@ function assertSpiConfig(value: JsonObject, path: string): void {
   integerAt(required(value, 'actual_sclk_hz', path), `${path}.actual_sclk_hz`);
   oneOf(required(value, 'clock_polarity', path), ['LOW', 'HIGH'], `${path}.clock_polarity`);
   oneOf(required(value, 'clock_phase', path), ['EDGE_1', 'EDGE_2'], `${path}.clock_phase`);
+  optional(value, 'hardware_cs_index', path, (item, itemPath) => {
+    integerAt(item, itemPath);
+    oneOf(item, [0, 1, 2, 3], itemPath);
+  });
   booleanAt(required(value, 'cs_active_low', path), `${path}.cs_active_low`);
   booleanAt(required(value, 'double_buffer', path), `${path}.double_buffer`);
   booleanAt(required(value, 'use_dma', path), `${path}.use_dma`);
@@ -457,6 +466,11 @@ function assertInspectPeripheral(value: unknown, path: string): void {
   stringRecordAt(required(peripheral, 'pins', path), `${path}.pins`);
   stringArrayAt(required(peripheral, 'functions', path), `${path}.functions`);
   stringArrayAt(required(peripheral, 'annotations', path), `${path}.annotations`);
+  optional(peripheral, 'function_pins', path, (functionPins, functionPinsPath) => {
+    recordAt(functionPins, functionPinsPath, (pins, pinsPath) => {
+      stringRecordAt(pins, pinsPath);
+    });
+  });
 }
 
 function assertClockSource(value: unknown, path: string): void {
@@ -518,6 +532,25 @@ function assertCapabilities(value: unknown, path: string): void {
   booleanAt(required(dma, 'automatic', `${path}.uart.dma`), `${path}.uart.dma.automatic`);
   for (const key of ['channel_min', 'channel_max', 'channel_count'] as const) {
     integerAt(required(dma, key, `${path}.uart.dma`), `${path}.uart.dma.${key}`);
+  }
+  optional(dma, 'rx_mode', `${path}.uart.dma`, (item, itemPath) => {
+    oneOf(item, ['dma', 'irq'], itemPath);
+  });
+  optional(dma, 'tx_mode', `${path}.uart.dma`, (item, itemPath) => {
+    oneOf(item, ['dma'], itemPath);
+  });
+  optional(dma, 'channels_per_uart', `${path}.uart.dma`, (item, itemPath) => {
+    integerAt(item, itemPath);
+    oneOf(item, [1, 2], itemPath);
+  });
+  if (dma.rx_mode !== undefined && dma.channels_per_uart !== undefined) {
+    const expectedChannels = dma.rx_mode === 'irq' ? 1 : 2;
+    if (dma.channels_per_uart !== expectedChannels) {
+      fail(
+        `${path}.uart.dma.channels_per_uart`,
+        `must be ${expectedChannels} when rx_mode is ${String(dma.rx_mode)}.`,
+      );
+    }
   }
 
   const mcan = objectAt(required(capabilities, 'mcan', path), `${path}.mcan`);
