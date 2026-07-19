@@ -3,7 +3,7 @@
   "publisher": "XRobot",
   "displayName": "%extension.displayName%",
   "description": "%extension.description%",
-  "version": "0.2.19",
+  "version": "0.3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/xrobot-org/hpm-peripheral-config.git"
@@ -90,28 +90,33 @@
           "default": "",
           "description": "%configuration.hpmpcPath.description%"
         },
+        "hpmPeripheral.cliPath": {
+          "type": "string",
+          "default": "xr_hpm_cfg",
+          "description": "%configuration.cliPath.description%"
+        },
+        "hpmPeripheral.cliTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 1000,
+          "maximum": 300000,
+          "description": "%configuration.cliTimeoutMs.description%"
+        },
         "hpmPeripheral.sdkEnvPath": {
           "type": "string",
           "default": "D:/HPM/sdk_env",
           "description": "%configuration.sdkEnvPath.description%"
-        },
-        "hpmPeripheral.runLibxrGenerator": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.runLibxrGenerator.description%"
         }
       }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "clean": "node -e \"require('node:fs').rmSync('out',{recursive:true,force:true})\"",
+    "compile": "npm run clean && tsc -p ./",
     "test": "npm run compile && node --test tests/*.test.js",
     "lint": "eslint src",
     "package": "vsce package"
-  },
-  "dependencies": {
-    "yaml": "^2.5.0"
   },
   "devDependencies": {
     "@types/node": "22.x",

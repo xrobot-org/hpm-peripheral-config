@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -67,7 +68,33 @@ function writeHpmpc(filePath: string, loaded: LoadedHpmpc): void {
   if (loaded.hasTrailingNewline) {
     text += loaded.eol;
   }
-  fs.writeFileSync(filePath, `${loaded.hasBom ? '\uFEFF' : ''}${text}`, 'utf8');
+  const content = `${loaded.hasBom ? '\uFEFF' : ''}${text}`;
+  const directory = path.dirname(filePath);
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let descriptor: number | undefined;
+  try {
+    const mode = fs.statSync(filePath).mode;
+    descriptor = fs.openSync(temporaryPath, 'wx', mode);
+    fs.writeFileSync(descriptor, content, 'utf8');
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    if (descriptor !== undefined) {
+      fs.closeSync(descriptor);
+    }
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
 }
 
 function hasCredential(value: unknown): boolean {
@@ -107,25 +134,6 @@ function copySourceContentToWorkingCopy(sourcePath: string, workingCopyPath: str
   }
 }
 
-function synchronizeHpmpcPair(sourcePath: string, workingCopyPath: string): void {
-  const source = readHpmpc(sourcePath);
-  const workingCopy = readHpmpc(workingCopyPath);
-  if (!hasCredential(workingCopy.document.clientKey) || !hasCredential(workingCopy.document.secretKey)) {
-    throw new Error(t('hpmpc.signedCopyInvalid'));
-  }
-  if (contentEqual(source.document, workingCopy.document)) {
-    return;
-  }
-
-  const sourceModified = fs.statSync(sourcePath).mtimeMs;
-  const workingCopyModified = fs.statSync(workingCopyPath).mtimeMs;
-  if (workingCopyModified >= sourceModified) {
-    copyContent(workingCopy, source, sourcePath);
-  } else {
-    copyContent(source, workingCopy, workingCopyPath);
-  }
-}
-
 function signedWorkingCopyCandidates(workspaceRoot: string, sourcePath: string): string[] {
   const localRoot = path.join(path.dirname(workspaceRoot), '.xrobot-local', path.basename(workspaceRoot));
   return [
@@ -145,10 +153,15 @@ function watchWorkingCopy(sourcePath: string, workingCopyPath: string): void {
   if (existing) {
     fs.unwatchFile(existing.workingCopyPath, existing.listener);
   }
-  const listener = (current: fs.Stats, previous: fs.Stats): void => {
-    if (current.mtimeMs === previous.mtimeMs) {
+  const initialStats = fs.statSync(resolvedWorkingCopyPath);
+  let observedMtimeMs = initialStats.mtimeMs;
+  let observedSize = initialStats.size;
+  const listener = (current: fs.Stats): void => {
+    if (current.mtimeMs === observedMtimeMs && current.size === observedSize) {
       return;
     }
+    observedMtimeMs = current.mtimeMs;
+    observedSize = current.size;
     try {
       copyWorkingContentToSource(resolvedSourcePath, resolvedWorkingCopyPath);
     } catch {
@@ -161,6 +174,16 @@ function watchWorkingCopy(sourcePath: string, workingCopyPath: string): void {
     listener,
   });
   fs.watchFile(resolvedWorkingCopyPath, { interval: 500, persistent: false }, listener);
+  setImmediate(() => {
+    if (watchedWorkingCopies.get(key)?.listener !== listener) {
+      return;
+    }
+    try {
+      listener(fs.statSync(resolvedWorkingCopyPath));
+    } catch {
+      // The polling watcher will retry after a temporary replace or removal.
+    }
+  });
 }
 
 export function disposeHpmpcWorkingCopyWatchers(): void {
@@ -190,10 +213,8 @@ export function prepareHpmpcForOpen(workspaceRoot: string, sourcePath: string): 
   if (existing && normalizedFilePath(existing.sourcePath) !== normalizedFilePath(sourcePath)) {
     fs.unwatchFile(existing.workingCopyPath, existing.listener);
     watchedWorkingCopies.delete(normalizedFilePath(workingCopyPath));
-    copySourceContentToWorkingCopy(sourcePath, workingCopyPath);
-  } else {
-    synchronizeHpmpcPair(sourcePath, workingCopyPath);
   }
+  copySourceContentToWorkingCopy(sourcePath, workingCopyPath);
   watchWorkingCopy(sourcePath, workingCopyPath);
   return workingCopyPath;
 }

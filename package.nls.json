@@ -11,6 +11,7 @@
   "configuration.title": "XRobot HPM Peripheral Config",
   "configuration.configPath.description": "Peripheral behavior configuration file relative to workspace root.",
   "configuration.hpmpcPath.description": "Optional .hpmpc path relative to workspace root. Empty means auto-detect.",
-  "configuration.sdkEnvPath.description": "HPM SDK Env directory used to locate the official project generator.",
-  "configuration.runLibxrGenerator.description": "Run xr_hpm_cfg after generating board glue to regenerate .config.yaml and User/app_main.cpp."
+  "configuration.cliPath.description": "Path or command name for the LibXR xr_hpm_cfg CLI (version 5.3.0 or newer recommended).",
+  "configuration.cliTimeoutMs.description": "Maximum time in milliseconds for one xr_hpm_cfg inspect, validate, or generate operation.",
+  "configuration.sdkEnvPath.description": "HPM SDK Env directory used to locate the official project generator."
 }

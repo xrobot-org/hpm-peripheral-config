@@ -4,23 +4,24 @@ A community VS Code extension for configuring HPMicro on-chip peripherals and
 generating XRobot + LibXR project glue.
 
 The official HPM Pinmux Tool remains responsible for pin assignment in
-`.hpmpc`. This extension reads those assignments, provides a graphical editor
-for peripheral behavior, and updates the project-side configuration and board
-files used by LibXR.
+`.hpmpc`. This extension provides the VS Code UI, file watching and local-tool
+launching. Project discovery, `.hpmpc` interpretation, configuration
+normalization, validation and code generation are delegated to the versioned
+JSON interface of `xr_hpm_cfg`.
 
 > This is a community integration maintained by the XRobot project. It is not
 > an official HPMicro product and is not endorsed by HPMicro.
 
 ## Features
 
-- Discover HPM projects and the board `pinmux.hpmpc` file.
+- Discover HPM projects and the board `pinmux.hpmpc` file through `xr_hpm_cfg`.
 - Reload detected peripherals automatically when `.hpmpc` is saved.
 - Select the Pinmux functions that belong to the active application.
 - Configure UART, I2C, SPI, CAN and CAN FD behavior in a VS Code webview.
-- Validate peripheral clocks, communication timing and incompatible settings.
+- Display structured clock, timing and compatibility diagnostics from the LibXR generator.
 - Generate or update `hpm_peripherals.yaml`, `User/libxr_config.yaml`,
   `pinmux.c/h` and `board.c/h`.
-- Run `xr_hpm_cfg` to regenerate `.config.yaml` and `User/app_main.cpp`.
+- Use one transactional `xr_hpm_cfg` generation pass for every managed output.
 - Open the official HPM Pinmux Tool and HPM SDK project generator.
 - Follow the VS Code display language for English and Simplified Chinese UI.
 
@@ -31,9 +32,10 @@ files used by LibXR.
 - [HPM Pinmux Tool](https://marketplace.visualstudio.com/items?itemName=HPMicro.hpm-pinmux-tool)
   for graphical pin assignment.
 - HPM SDK Env when using the official project generator.
-- The HPM generator branch of
+- LibXR_CppCodeGenerator 5.3.0 or newer from
   [LibXR_CppCodeGenerator](https://github.com/CaFeZn/LibXR_CppCodeGenerator/tree/feat/hpm-config-generator),
-  which provides `xr_hpm_cfg` when `hpmPeripheral.runLibxrGenerator` is enabled.
+  installed so that `xr_hpm_cfg` is on `PATH`, or selected with
+  `hpmPeripheral.cliPath`.
 - The matching
   [LibXR HPM peripheral branch](https://github.com/CaFeZn/libxr/tree/feat/hpm-uart-peripheral-config)
   for generated UART and GPIO-CS SPI code.
@@ -43,6 +45,11 @@ Install the current HPM generator with:
 ```bash
 python -m pip install --upgrade "git+https://github.com/CaFeZn/LibXR_CppCodeGenerator.git@feat/hpm-config-generator"
 ```
+
+The extension requires HPM JSON protocol version 1 and blocks operations when
+the CLI response is incompatible. An unknown or pre-5.3.0 package version is
+reported as a non-blocking compatibility warning when protocol 1 is still
+available.
 
 Until these HPM changes are merged into upstream releases, point the project's
 LibXR checkout or `LIBXR_DIR` at the matching branch above. The extension never
@@ -56,16 +63,36 @@ rewrites the project's LibXR repository or CMake dependency source.
 4. Save `.hpmpc`; the peripheral editor reloads the detected configuration automatically.
 5. Configure the peripherals and select **Save + Generate** after validation passes.
 
-The extension preserves unmanaged sections in `User/libxr_config.yaml` and
-only updates the peripheral entries it owns. Commit project files before the
-first generation so changes can be reviewed easily.
+Unsaved peripheral behavior values remain in the editor while updated Pinmux
+functions and pins are applied. The command-palette refresh command remains
+available for compatibility, but normal use does not require a refresh button.
+
+**Save + Generate** validates the current form without writing it first, then
+passes that exact configuration to `xr_hpm_cfg generate --config-stdin`. The
+backend commits `hpm_peripherals.yaml` and every generated file in one
+transaction, so a render or commit failure does not leave a partially updated
+project.
+
+`xr_hpm_cfg` preserves unmanaged sections in `User/libxr_config.yaml` and only
+updates the peripheral entries it owns. Commit project files before the first
+generation so changes can be reviewed easily.
+
+The repository `.hpmpc` is always the canonical Pinmux configuration. If the
+official Pinmux Tool requires credentials, the extension opens a signed copy
+under the sibling `.xrobot-local` directory, copies repository content into it
+before opening, and synchronizes only its `content` back after saves. A newer
+timestamp on a stale signed copy never replaces repository content.
 
 ## Settings
 
 - `hpmPeripheral.configPath`: peripheral behavior YAML relative to the project.
 - `hpmPeripheral.hpmpcPath`: optional explicit `.hpmpc` path.
+- `hpmPeripheral.cliPath`: `xr_hpm_cfg` executable path or command name.
+- `hpmPeripheral.cliTimeoutMs`: CLI timeout in milliseconds (default `30000`).
 - `hpmPeripheral.sdkEnvPath`: HPM SDK Env directory.
-- `hpmPeripheral.runLibxrGenerator`: run `xr_hpm_cfg` after board generation.
+
+`hpmPeripheral.runLibxrGenerator` was removed in 0.3.0. Generation now always
+uses `xr_hpm_cfg`; configure `hpmPeripheral.cliPath` instead.
 
 ## Development
 

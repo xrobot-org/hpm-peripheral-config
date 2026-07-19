@@ -25,7 +25,7 @@ function readName(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8')).content.name;
 }
 
-async function waitFor(predicate, timeoutMs = 2500) {
+async function waitFor(predicate, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) {
@@ -34,6 +34,39 @@ async function waitFor(predicate, timeoutMs = 2500) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+test('repository hpmpc remains canonical when a signed working copy is newer', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hpmpc-working-copy-'));
+  const workspaceRoot = path.join(directory, 'project');
+  const source = path.join(workspaceRoot, 'boards', 'test', 'pinmux.hpmpc');
+  const workingCopy = path.join(
+    directory,
+    '.xrobot-local',
+    'project',
+    'boards',
+    'test',
+    'pinmux.hpmpc',
+  );
+  t.after(() => {
+    disposeHpmpcWorkingCopyWatchers();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  writeDocument(source, document('repository-canonical'));
+  writeDocument(workingCopy, document('stale-signed-copy', true));
+  const oldTime = new Date(Date.now() - 60_000);
+  const newTime = new Date();
+  fs.utimesSync(source, oldTime, oldTime);
+  fs.utimesSync(workingCopy, newTime, newTime);
+
+  assert.equal(prepareHpmpcForOpen(workspaceRoot, source), workingCopy);
+
+  assert.equal(readName(source), 'repository-canonical');
+  assert.equal(readName(workingCopy), 'repository-canonical');
+  const signed = JSON.parse(fs.readFileSync(workingCopy, 'utf8'));
+  assert.equal(signed.clientKey, 'TEST_CLIENT');
+  assert.equal(signed.secretKey, 'TEST_SECRET');
+});
 
 test('rebinds a shared signed working copy to the newly opened source hpmpc', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hpmpc-working-copy-'));
@@ -54,9 +87,53 @@ test('rebinds a shared signed working copy to the newly opened source hpmpc', as
   assert.equal(prepareHpmpcForOpen(workspaceRoot, sourceB), workingCopy);
   assert.equal(readName(workingCopy), 'source-b');
 
+  const unchangedMtime = fs.statSync(workingCopy).mtime;
   writeDocument(workingCopy, document('working-b-updated', true));
+  fs.utimesSync(workingCopy, unchangedMtime, unchangedMtime);
   await waitFor(() => readName(sourceB) === 'working-b-updated');
 
   assert.equal(readName(sourceA), 'source-a');
   assert.equal(readName(sourceB), 'working-b-updated');
+});
+
+test('removes the temporary file when atomic working-copy replacement fails', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hpmpc-working-copy-'));
+  const workspaceRoot = path.join(directory, 'project');
+  const source = path.join(workspaceRoot, 'boards', 'test', 'pinmux.hpmpc');
+  const workingCopy = path.join(
+    directory,
+    '.xrobot-local',
+    'project',
+    'boards',
+    'test',
+    'pinmux.hpmpc',
+  );
+  const originalRenameSync = fs.renameSync;
+  t.after(() => {
+    fs.renameSync = originalRenameSync;
+    disposeHpmpcWorkingCopyWatchers();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  writeDocument(source, document('repository-canonical'));
+  writeDocument(workingCopy, document('stale-signed-copy', true));
+  fs.renameSync = (oldPath, newPath) => {
+    if (path.resolve(newPath) === path.resolve(workingCopy)) {
+      const error = new Error('simulated atomic rename failure');
+      error.code = 'EACCES';
+      throw error;
+    }
+    return originalRenameSync(oldPath, newPath);
+  };
+
+  assert.throws(
+    () => prepareHpmpcForOpen(workspaceRoot, source),
+    /simulated atomic rename failure/,
+  );
+  assert.equal(readName(source), 'repository-canonical');
+  assert.equal(readName(workingCopy), 'stale-signed-copy');
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(workingCopy)).filter((name) => name.endsWith('.tmp')),
+    [],
+  );
 });
